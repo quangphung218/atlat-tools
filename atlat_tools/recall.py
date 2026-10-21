@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+"""recall — long-term memory for a working folder: full-text search (SQLite FTS5) over your markdown notes and your Claude Code
+conversations, newest first. No LLM, no daemon, no network. Diacritics-insensitive (Vietnamese "trien khai" matches "triển khai").
+
+    recall "deploy failed"              search (index is refreshed first), 10 newest hits
+    recall "a b" -n 20                  more hits · words are ANDed; "exact phrase"; a OR b; prefix*
+    recall "x" --source chat            one source only: chat | notes | memory
+    recall --index                      refresh the index only (safe to call from a hook)
+    recall --stats                      documents per source and database size
+
+What gets indexed (configure with flags or ~/.config/recall/config.json):
+  - chat: Claude Code transcripts of the current project (~/.claude/projects/<key of cwd>/*.jsonl): your messages and the
+    assistant's replies, tool calls and thinking skipped; --all-projects indexes every project
+  - notes: markdown/text files under --dir folders (default: the current directory, depth-limited, skipping node_modules etc.)
+  - memory: the project's auto-memory folder (~/.claude/projects/<key>/memory)
+The index lives in --db (default ~/.local/share/recall/<key>.db) and only re-reads files whose mtime/size changed.
+"""
+import argparse
+import json
+import os
+import re
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+HOME = Path.home()
+REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+TAGS = re.compile(r"</?(command-[a-z-]+|local-command-[a-z]+)>")
+CHUNK = 1800
+SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "vendor", "Pods", ".venv", "venv", "__pycache__", "target", "coverage"}
+NOTE_EXT = {".md", ".txt", ".markdown", ".rst"}
+NAMES = {"en": {"user": "user", "assistant": "assistant", "summary": "summary", "none": "no match", "index": "index: {changed} files updated, {gone} removed"},
+         "vi": {"user": "anh", "assistant": "em", "summary": "tóm tắt", "none": "không thấy gì", "index": "chỉ mục: {changed} file cập nhật, {gone} file gỡ"}}
+
+
+def project_key(path):
+    """Claude Code's folder name for a project: the absolute path with '/' replaced by '-'."""
+    return "-" + str(Path(path).resolve()).strip("/").replace("/", "-")
+
+
+def local_ts(iso):
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso[:16].replace("T", " ")
+
+
+class Recall:
+    def __init__(self, cwd=None, db=None, dirs=None, claude_dir=None, all_projects=False, depth=4, lang="en"):
+        self.cwd = Path(cwd or Path.cwd()).resolve()
+        self.claude = Path(claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+        self.key = project_key(self.cwd)
+        self.db_path = Path(db) if db else HOME / ".local" / "share" / "recall" / f"{self.key.strip('-')[-80:]}.db"
+        self.dirs = [Path(d).expanduser().resolve() for d in (dirs or [self.cwd])]
+        self.all_projects = all_projects
+        self.depth = depth
+        self.n = NAMES.get(lang, NAMES["en"])
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.db = sqlite3.connect(self.db_path)
+        self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, mtime REAL, size INTEGER);
+            CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(text, source UNINDEXED, path UNINDEXED, ts UNINDEXED, who UNINDEXED,
+                tokenize = 'unicode61 remove_diacritics 2');""")
+
+    # --- sources -----------------------------------------------------------------------------------------------
+    def sources(self):
+        projects = self.claude / "projects"
+        if self.all_projects and projects.is_dir():
+            for d in sorted(projects.iterdir()):
+                for p in sorted(d.glob("*.jsonl")):
+                    yield "chat", p
+        else:
+            for p in sorted((projects / self.key).glob("*.jsonl")):
+                yield "chat", p
+        for p in sorted((projects / self.key / "memory").glob("*.md")):
+            yield "memory", p
+        for root in self.dirs:
+            for p in self.walk(root):
+                yield "notes", p
+
+    def walk(self, root):
+        base_depth = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            if len(Path(dirpath).parts) - base_depth >= self.depth:
+                dirnames[:] = []
+            for f in filenames:
+                p = Path(dirpath) / f
+                if p.suffix.lower() in NOTE_EXT and p.stat().st_size < 2_000_000:
+                    yield p
+
+    def chat_rows(self, path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                kind = d.get("type")
+                if kind not in ("user", "assistant") or d.get("isSidechain"):
+                    continue
+                content = (d.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    parts = [content]
+                elif isinstance(content, list):
+                    parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+                else:
+                    continue
+                text = TAGS.sub("", REMINDER.sub("", "\n".join(parts))).strip()
+                if len(text) < 3:
+                    continue
+                who = self.n["summary"] if d.get("isCompactSummary") else (self.n["user"] if kind == "user" else self.n["assistant"])
+                yield local_ts(d.get("timestamp") or ""), who, text
+
+    @staticmethod
+    def file_rows(path):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        ts = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        buf = ""
+        for para in re.split(r"\n\s*\n", text):
+            if buf and len(buf) + len(para) > CHUNK:
+                yield ts, "", buf
+                buf = ""
+            buf = f"{buf}\n\n{para}" if buf else para
+        if buf.strip():
+            yield ts, "", buf
+
+    # --- index + search ----------------------------------------------------------------------------------------
+    def index(self):
+        db = self.db
+        seen, changed = set(), 0
+        known = {p: (m, s) for p, m, s in db.execute("SELECT path, mtime, size FROM files")}
+        for source, p in self.sources():
+            key = str(p)
+            seen.add(key)
+            try:
+                st = p.stat()
+            except OSError:
+                continue
+            if known.get(key) == (st.st_mtime, st.st_size):
+                continue
+            rows = self.chat_rows(p) if source == "chat" else self.file_rows(p)
+            db.execute("DELETE FROM docs WHERE path = ?", (key,))
+            db.executemany("INSERT INTO docs(text, source, path, ts, who) VALUES (?, ?, ?, ?, ?)", ((t, source, key, ts, who) for ts, who, t in rows))
+            db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (key, st.st_mtime, st.st_size))
+            changed += 1
+        gone = set(known) - seen
+        for g in gone:
+            db.execute("DELETE FROM docs WHERE path = ?", (g,))
+            db.execute("DELETE FROM files WHERE path = ?", (g,))
+        db.commit()
+        return changed, len(gone)
+
+    def short(self, path):
+        p = path.replace(str(self.cwd) + "/", "").replace(str(HOME), "~")
+        return re.sub(r"projects/[^/]+/", "projects/…/", p)
+
+    def search(self, query, limit=10, source=None):
+        sql = ("SELECT ts, source, who, path, snippet(docs, 0, '«', '»', ' … ', 24) FROM docs WHERE docs MATCH ? "
+               + ("AND source = ? " if source else "") + "ORDER BY ts DESC LIMIT ?")
+        args = [query] + ([source] if source else []) + [limit]
+        try:
+            return self.db.execute(sql, args).fetchall()
+        except sqlite3.OperationalError:
+            args[0] = " ".join('"' + w.replace('"', "") + '"' for w in query.split())
+            return self.db.execute(sql, args).fetchall()
+
+    def stats(self):
+        return list(self.db.execute("SELECT source, count(*) FROM docs GROUP BY source ORDER BY 2 DESC")), self.db_path.stat().st_size // 1024
+
+
+def load_config():
+    f = HOME / ".config" / "recall" / "config.json"
+    try:
+        return json.loads(f.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def main(argv=None):
+    cfg = load_config()
+    ap = argparse.ArgumentParser(prog="recall", description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog="\n".join(__doc__.split("\n")[2:]))
+    ap.add_argument("query", nargs="*")
+    ap.add_argument("-n", type=int, default=10)
+    ap.add_argument("--source", choices=["chat", "notes", "memory"])
+    ap.add_argument("--dir", action="append", default=cfg.get("dirs"), help="note folders to index (repeatable; default: current directory)")
+    ap.add_argument("--depth", type=int, default=cfg.get("depth", 4))
+    ap.add_argument("--all-projects", action="store_true", default=cfg.get("all_projects", False))
+    ap.add_argument("--db", default=cfg.get("db"))
+    ap.add_argument("--claude-dir", default=cfg.get("claude_dir"))
+    ap.add_argument("--index", action="store_true")
+    ap.add_argument("--stats", action="store_true")
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--lang", choices=sorted(NAMES), default=cfg.get("lang", "en"))
+    a = ap.parse_args(argv)
+    r = Recall(None, a.db, a.dir, a.claude_dir, a.all_projects, a.depth, a.lang)
+    changed, gone = r.index()
+    if not (a.quiet or a.query):
+        print(r.n["index"].format(changed=changed, gone=gone))
+    if a.stats:
+        rows, kb = r.stats()
+        for src, n in rows:
+            print(f"{src:7} {n}")
+        print(f"DB: {kb} KB · {r.db_path}")
+    if a.query:
+        hits = r.search(" ".join(a.query), a.n, a.source)
+        if not hits:
+            print(r.n["none"]); return 1
+        for ts, src, who, path, snip in hits:
+            print(f"{ts}  [{src + '/' + who if who else src}]  {r.short(path)}")
+            print("   " + " ".join(snip.split()))
+    elif not (a.index or a.stats):
+        ap.print_help(); return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
