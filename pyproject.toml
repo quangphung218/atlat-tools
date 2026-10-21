@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlat-tools"
-version = "0.1.0"
-description = "Small, dependency-free CLIs for people who run coding agents on their own machine: lint agent configs, see what you really use, manage skills, search your memory."
+version = "0.2.0"
+description = "Dependency-free CLIs for people who run coding agents on their own machine: lint agent configs, see what you really use, manage skills, search your memory, verify shipped features in logs, watch host health, lint Vietnamese voice, prune merged branches."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -27,6 +27,10 @@ agent-lint = "atlat_tools.agent_lint:main"
 claude-observe = "atlat_tools.claude_observe:main"
 claude-skills = "atlat_tools.claude_skills:main"
 recall = "atlat_tools.recall:main"
+logexpect = "atlat_tools.logexpect:main"
+agent-health = "atlat_tools.agent_health:main"
+vn-style = "atlat_tools.vn_style:main"
+git-prune-merged = "atlat_tools.git_prune_merged:main"
 
 [tool.setuptools]
 packages = ["atlat_tools"]

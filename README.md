@@ -11,6 +11,10 @@ verify, not a judgement call.
 | `claude-observe` | What you actually do with Claude Code over the last N days: prompts per project, requests you keep repeating, which skills and tools get used, where tools fail. Reads `~/.claude/history.jsonl` and the transcripts; keeps 80 characters per prompt and masks anything that looks like a key. |
 | `claude-skills` | Manage the global skill folder with real usage numbers: list, unused, upstream drift of `npx skills` installs, frontmatter patching, enable/disable through `skillOverrides` only, upgrades with backups, data-driven proposals. |
 | `recall` | Long-term memory for a working folder: SQLite FTS5 search over your markdown notes and your Claude Code conversations, newest first, diacritics-insensitive. |
+| `logexpect` | "The feature I just shipped must actually run": register an expectation on a log file, learn when the first real occurrence appears and whether it ended well (ok/bad regex, correlated by task/project id), get told when it never happens. |
+| `agent-health` | Health of a machine that runs coding agents: load with the top process and which agent session owns it, RAM/swap, API reachability, agent sessions with idle time, dev servers and headless browsers left behind, disk hogs. `--fix` kills only provably orphaned leftovers. |
+| `vn-style` | Linter for a Vietnamese "house voice" (replies, reports, chat): forbidden pronouns, filler openers/closers, padding words, hedges, vague time estimates, spaces before punctuation, old-style tone marks, Title Case. `--fix` applies the mechanical ones. |
+| `git-prune-merged` | Delete remote (and optionally local) branches merged into main, never touching protected branches, branches with open PRs or branches checked out in a worktree. Lists first, deletes with `--delete`. |
 
 Every tool has `--help`, `--json` where it makes sense, and `--lang vi` for Vietnamese output.
 
@@ -93,10 +97,61 @@ By default it indexes the current folder's markdown/text files (depth 4, skippin
 Claude Code transcripts of this project (your messages and the assistant's replies only) and the project's auto-memory.
 Set defaults in `~/.config/recall/config.json`: `{"dirs": ["~/notes"], "all_projects": true, "lang": "vi"}`.
 
+## logexpect
+
+```bash
+logexpect add "PR #62 rerun" '"event":"project_item_rerun"' --log ~/app/app.log --ok '"event":"rerun_done"' --bad '"event":"rerun_failed"'
+logexpect check --log ~/app/app.log        # from a cron job or a shell hook
+logexpect wait --log ~/app/app.log --notify-cmd 'say {text}'
+logexpect list; logexpect done 2; logexpect prune
+```
+
+The first line matching the main regex since `add` is the hit; lines in the next two hours that carry the same
+`"task"`/`"project"`/`"id"` (or your `--key`) decide ok/bad. Pending for seven days is reported once as stale: wrong regex or
+unused feature. JSON lines (ts/time/timestamp) and text lines with a leading ISO timestamp both work.
+
+## agent-health
+
+```bash
+agent-health                 # markdown report: verdict, load, sessions, stray processes
+agent-health --brief         # one line for a status bar or a daily note
+agent-health --disk          # add cache and node_modules sizes
+agent-health --fix           # kill orphaned dev servers / headless browsers older than 2 h
+agent-health --agent aider --idle-hours 24
+```
+
+Sessions are processes named `claude`, `codex`, `gemini`, `cursor-agent`, `aider`, `opencode`, `goose` (add more with
+`--agent`). When load exceeds the core count the report names the hottest process and the agent session it belongs to.
+Exit code is 1 when there is a warning, so it doubles as a check.
+
+## vn-style
+
+```bash
+vn-style reply.md                    # findings with line numbers
+printf '%s' "$MESSAGE" | vn-style -  # lint a message before sending it
+vn-style docs/ --strict              # warnings fail too
+vn-style reply.md --fix              # NFC, no space before punctuation, hòa → hoà
+vn-style x.md --rules my-voice.json  # your own pronoun / filler / hedge lists
+```
+
+Defaults encode a terse, conclusion-first voice: no `bạn`/`tôi`/`mình` (error), no "Dưới đây là…" openers or "Hy vọng…"
+closers, no `tiến hành`/`một cách` padding, numbers instead of "hơi lâu", new-style tone marks, no Title Case. Fixes never
+change wording. For product copy, UI strings and i18n files use a dedicated validator such as the one that ships with the
+`vietnamese-tech-writing` skill; this tool is about voice.
+
+## git-prune-merged
+
+```bash
+git-prune-merged                         # list
+git-prune-merged ~/code/app --delete     # delete merged remote branches
+git-prune-merged --delete --local --keep 'hotfix/*'
+```
+
 ## Design notes
 
 - No dependencies, no daemon, no network (except `claude-skills check`, which asks GitHub for tree hashes through `gh`,
-  and `upgrade`, which runs `npx skills update`).
+  `upgrade`, which runs `npx skills update`, `git-prune-merged`, which talks to your git remote and `gh`, and `agent-health`,
+  which probes one URL).
 - Everything that changes files makes a backup first and writes one log line. Nothing deletes user files.
 - Output is markdown you can paste into a report, or JSON you can pipe into the next tool.
 
@@ -105,8 +160,9 @@ Set defaults in `~/.config/recall/config.json`: `{"dirs": ["~/notes"], "all_proj
 Bộ công cụ nhỏ cho người chạy agent code trên máy mình: `agent-lint` soát cấu hình agent (đường dẫn chết, quyền quá rộng,
 hook gọi script không có, skill hỏng, lộ secret), `claude-observe` cho biết anh thật sự dùng Claude Code vào việc gì và
 skill nào được gọi, `claude-skills` quản kho skill bằng số liệu đó (tắt cái không dùng, nâng cấp cái lệch upstream, chỉ
-đụng `skillOverrides`), `recall` tìm lại trong ghi chú và lịch sử trò chuyện, bỏ dấu khi so. Thêm `--lang vi` để nhận
-thông báo tiếng Việt.
+đụng `skillOverrides`), `recall` tìm lại trong ghi chú và lịch sử trò chuyện, bỏ dấu khi so; `logexpect` chờ lần chạy thật đầu tiên của tính
+năng vừa deploy trong log; `agent-health` sức khoẻ máy chạy agent; `vn-style` soát văn tiếng Việt theo giọng nhà (em/anh,
+không câu đệm, dấu kiểu mới) có `--fix`; `git-prune-merged` dọn branch đã merge. Thêm `--lang vi` để nhận thông báo tiếng Việt.
 
 ## License
 
