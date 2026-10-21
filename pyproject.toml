@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlat-tools"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dependency-free CLIs for people who run coding agents on their own machine: lint agent configs, see what you really use, manage skills, search your memory, verify shipped features in logs, watch host health, lint Vietnamese voice, prune merged branches."
 readme = "README.md"
 license = { text = "MIT" }

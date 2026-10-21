@@ -74,6 +74,10 @@ class Observer:
             return "(tmp)"
         return p.replace(str(HOME), "~") or "?"
 
+    def keep(self, text):
+        """Hook for subclasses: return False to drop a prompt (e.g. one your own tooling typed)."""
+        return True
+
     def prompts(self):
         rows = []
         f = self.claude / "history.jsonl"
@@ -89,7 +93,7 @@ class Observer:
             if ts < since_ms:
                 continue
             text = (d.get("display") or "").strip()
-            if not text or text.startswith(self.exclude_prefix):
+            if not text or text.startswith(self.exclude_prefix) or not self.keep(text):
                 continue
             proj = self.label(d.get("project"))
             if proj is None:

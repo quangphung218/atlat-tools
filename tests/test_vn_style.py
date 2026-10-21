@@ -85,5 +85,15 @@ class VnStyleTest(unittest.TestCase):
                 self.assertEqual(vn_style.main([str(f)]), 1)       # forbidden pronoun is an error
 
 
+class StdinTest(unittest.TestCase):
+    def test_stdin_fix_keeps_stdout_clean(self):
+        import subprocess
+        r = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "atlat_tools" / "vn_style.py"), "-", "--fix"],
+                           input="bạn ơi, thủy .", capture_output=True, text=True)
+        self.assertEqual(r.stdout, "bạn ơi, thuỷ.")
+        self.assertIn("pronoun", r.stderr)
+        self.assertEqual(r.returncode, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,12 @@ class RecallTest(unittest.TestCase):
         self.r.index()
         self.assertTrue(self.r.search("port-was busy."))
 
+    def test_labelled_dirs(self):
+        r = recall.Recall(self.proj, Path(self.tmp.name) / "l.db", [f"{self.proj / 'notes'}:runbook"], self.claude)
+        r.index()
+        self.assertEqual({h[1] for h in r.search("port busy", source="runbook")}, {"runbook"})
+        r.db.close()
+
     def test_removed_file_is_dropped(self):
         self.r.index()
         (self.proj / "notes" / "deploy.md").unlink()

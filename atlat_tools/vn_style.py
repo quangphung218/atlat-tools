@@ -172,16 +172,18 @@ def main(argv=None):
             findings[name] = f
     e = sum(1 for f in findings.values() for x in f if x[1] == "error")
     w = sum(1 for f in findings.values() for x in f if x[1] == "warn")
+    # stdin + --fix: stdout carries only the fixed text (so it can be piped on); the report goes to stderr
+    out = sys.stderr if (a.fix and any(n == "-" for n, _ in files)) else sys.stdout
     if a.json:
         print(json.dumps({"files": len(files), "errors": e, "warnings": w, "fixed": fixed,
-                          "findings": [{"file": n, "line": l, "level": lv, "code": c, "message": m} for n, f in findings.items() for l, lv, c, m in f]}, ensure_ascii=False, indent=1))
+                          "findings": [{"file": n, "line": l, "level": lv, "code": c, "message": m} for n, f in findings.items() for l, lv, c, m in f]}, ensure_ascii=False, indent=1), file=out)
     else:
         for name, f in findings.items():
             for line, level, code, msg in f:
-                print(f"{name}:{line}: {'E' if level == 'error' else 'W'} {code}: {msg}")
-        if a.fix:
-            print(lint.t["fixed"].format(n=fixed))
-        print(lint.t["sum"].format(files=len(files), e=e, w=w) if findings else lint.t["clean"])
+                print(f"{name}:{line}: {'E' if level == 'error' else 'W'} {code}: {msg}", file=out)
+        if a.fix and not any(n == "-" for n, _ in files):
+            print(lint.t["fixed"].format(n=fixed), file=out)
+        print(lint.t["sum"].format(files=len(files), e=e, w=w) if findings else lint.t["clean"], file=out)
     return 1 if e or (a.strict and w) else 0
 
 

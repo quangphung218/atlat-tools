@@ -11,7 +11,8 @@ conversations, newest first. No LLM, no daemon, no network. Diacritics-insensiti
 What gets indexed (configure with flags or ~/.config/recall/config.json):
   - chat: Claude Code transcripts of the current project (~/.claude/projects/<key of cwd>/*.jsonl): your messages and the
     assistant's replies, tool calls and thinking skipped; --all-projects indexes every project
-  - notes: markdown/text files under --dir folders (default: the current directory, depth-limited, skipping node_modules etc.)
+  - notes: markdown/text files under --dir folders (default: the current directory, depth-limited, skipping node_modules etc.);
+    `--dir ~/runs:run` gives that folder its own source label
   - memory: the project's auto-memory folder (~/.claude/projects/<key>/memory)
 The index lives in --db (default ~/.local/share/recall/<key>.db) and only re-reads files whose mtime/size changed.
 """
@@ -52,7 +53,12 @@ class Recall:
         self.claude = Path(claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
         self.key = project_key(self.cwd)
         self.db_path = Path(db) if db else HOME / ".local" / "share" / "recall" / f"{self.key.strip('-')[-80:]}.db"
-        self.dirs = [Path(d).expanduser().resolve() for d in (dirs or [self.cwd])]
+        # a dir may carry a label: "~/notes:notes" → source name "notes"; default label is "notes"
+        self.dirs = []
+        for d in (dirs or [str(self.cwd)]):
+            d = str(d)
+            path, label = (d.rsplit(":", 1) if ":" in d and not d.endswith(":") and "/" not in d.rsplit(":", 1)[1] else (d, "notes"))
+            self.dirs.append((Path(path).expanduser().resolve(), label))
         self.all_projects = all_projects
         self.depth = depth
         self.n = NAMES.get(lang, NAMES["en"])
@@ -75,9 +81,9 @@ class Recall:
                 yield "chat", p
         for p in sorted((projects / self.key / "memory").glob("*.md")):
             yield "memory", p
-        for root in self.dirs:
+        for root, label in self.dirs:
             for p in self.walk(root):
-                yield "notes", p
+                yield label, p
 
     def walk(self, root):
         base_depth = len(root.parts)
@@ -183,8 +189,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="recall", description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter, epilog="\n".join(__doc__.split("\n")[2:]))
     ap.add_argument("query", nargs="*")
     ap.add_argument("-n", type=int, default=10)
-    ap.add_argument("--source", choices=["chat", "notes", "memory"])
-    ap.add_argument("--dir", action="append", default=cfg.get("dirs"), help="note folders to index (repeatable; default: current directory)")
+    ap.add_argument("--source", help="chat | notes | memory | a label given with --dir path:label")
+    ap.add_argument("--dir", action="append", default=cfg.get("dirs"), help="note folder to index, optionally path:label (repeatable; default: current directory)")
     ap.add_argument("--depth", type=int, default=cfg.get("depth", 4))
     ap.add_argument("--all-projects", action="store_true", default=cfg.get("all_projects", False))
     ap.add_argument("--db", default=cfg.get("db"))
