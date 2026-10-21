@@ -133,8 +133,13 @@ class Recall:
     def walk(self, root):
         import fnmatch
         base_depth = len(root.parts)
-        globs = self.skip_globs + ignore_patterns(root)
-        skip = lambda rel: any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel.split("/")[-1], g) or any(fnmatch.fnmatch(part, g) for part in rel.split("/")) for g in globs)
+        import unicodedata
+        globs = [unicodedata.normalize("NFC", g) for g in self.skip_globs + ignore_patterns(root)]  # cloud drives hand back NFD names
+
+        def skip(rel):
+            rel = unicodedata.normalize("NFC", rel)
+            parts = rel.split("/")
+            return any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(parts[-1], g) or any(fnmatch.fnmatch(part, g) for part in parts) for g in globs)
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".") and not skip(str((Path(dirpath) / d).relative_to(root)))]
             if len(Path(dirpath).parts) - base_depth >= self.depth:
