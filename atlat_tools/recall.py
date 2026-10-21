@@ -15,6 +15,8 @@ What gets indexed (configure with flags or ~/.config/recall/config.json):
     `--dir ~/runs:run` gives that folder its own source label
   - memory: the project's auto-memory folder (~/.claude/projects/<key>/memory)
 The index lives in --db (default ~/.local/share/recall/<key>.db) and only re-reads files whose mtime/size changed.
+Credentials never enter the index: private-key blocks, API keys, tokens, JWTs and "password: …" values are masked before insert
+(--no-redact to keep them). Skip paths with --skip-glob or a .recallignore file (one glob per line) at a --dir root.
 """
 import argparse
 import json
@@ -26,6 +28,17 @@ from datetime import datetime
 from pathlib import Path
 
 HOME = Path.home()
+# Secrets never enter the index: keys, tokens, PEM blocks, JWTs and "password: …" assignments are masked before insert.
+SECRETS = [
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S), "<redacted private key>"),
+    (re.compile(r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}"), "<redacted key>"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), "<redacted token>"),
+    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<redacted key>"),
+    (re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}"), "<redacted token>"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted jwt>"),
+    (re.compile(r"(?i)((?:api[_ -]?key|secret|token|password|passwd|mật khẩu)\s*[:=]\s*[\"']?)([^\s\"']{8,})"), r"\1<redacted>"),
+]
+IGNORE_FILE = ".recallignore"
 REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 TAGS = re.compile(r"</?(command-[a-z-]+|local-command-[a-z]+)>")
 CHUNK = 1800
@@ -33,6 +46,23 @@ SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "vendor", "Pods",
 NOTE_EXT = {".md", ".txt", ".markdown", ".rst"}
 NAMES = {"en": {"user": "user", "assistant": "assistant", "summary": "summary", "none": "no match", "index": "index: {changed} files updated, {gone} removed"},
          "vi": {"user": "anh", "assistant": "em", "summary": "tóm tắt", "none": "không thấy gì", "index": "chỉ mục: {changed} file cập nhật, {gone} file gỡ"}}
+
+
+def redact(text):
+    """Mask anything that looks like a credential; returns (text, number of masked spans)."""
+    n = 0
+    for pat, rep in SECRETS:
+        text, k = pat.subn(rep, text)
+        n += k
+    return text, n
+
+
+def ignore_patterns(root):
+    """Glob patterns from <root>/.recallignore (one per line, # comments), matched against paths relative to root."""
+    f = Path(root) / IGNORE_FILE
+    if not f.is_file():
+        return []
+    return [l.strip() for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")]
 
 
 def project_key(path):
@@ -48,7 +78,7 @@ def local_ts(iso):
 
 
 class Recall:
-    def __init__(self, cwd=None, db=None, dirs=None, claude_dir=None, all_projects=False, depth=4, lang="en"):
+    def __init__(self, cwd=None, db=None, dirs=None, claude_dir=None, all_projects=False, depth=4, lang="en", redact_secrets=True, skip_globs=()):
         self.cwd = Path(cwd or Path.cwd()).resolve()
         self.claude = Path(claude_dir or os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
         self.key = project_key(self.cwd)
@@ -61,6 +91,11 @@ class Recall:
             self.dirs.append((Path(path).expanduser().resolve(), label))
         self.all_projects = all_projects
         self.depth = depth
+        self.redact_secrets = redact_secrets
+        self.skip_globs = list(skip_globs)
+        self.changed_paths = []   # (source, path) re-read in the last index()
+        self.redacted = 0         # masked spans in the last index()
+        self.unreadable = []      # files the OS refused to read (e.g. iCloud placeholders not downloaded yet)
         self.n = NAMES.get(lang, NAMES["en"])
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
@@ -86,14 +121,17 @@ class Recall:
                 yield label, p
 
     def walk(self, root):
+        import fnmatch
         base_depth = len(root.parts)
+        globs = self.skip_globs + ignore_patterns(root)
+        skip = lambda rel: any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(rel.split("/")[-1], g) or any(fnmatch.fnmatch(part, g) for part in rel.split("/")) for g in globs)
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".") and not skip(str((Path(dirpath) / d).relative_to(root)))]
             if len(Path(dirpath).parts) - base_depth >= self.depth:
                 dirnames[:] = []
             for f in filenames:
                 p = Path(dirpath) / f
-                if p.suffix.lower() in NOTE_EXT and p.stat().st_size < 2_000_000:
+                if p.suffix.lower() in NOTE_EXT and p.stat().st_size < 2_000_000 and not skip(str(p.relative_to(root))):
                     yield p
 
     def chat_rows(self, path):
@@ -116,12 +154,17 @@ class Recall:
                 text = TAGS.sub("", REMINDER.sub("", "\n".join(parts))).strip()
                 if len(text) < 3:
                     continue
+                if self.redact_secrets:
+                    text, k = redact(text)
+                    self.redacted += k
                 who = self.n["summary"] if d.get("isCompactSummary") else (self.n["user"] if kind == "user" else self.n["assistant"])
                 yield local_ts(d.get("timestamp") or ""), who, text
 
-    @staticmethod
-    def file_rows(path):
+    def file_rows(self, path):
         text = path.read_text(encoding="utf-8", errors="replace")
+        if self.redact_secrets:
+            text, k = redact(text)
+            self.redacted += k
         ts = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         buf = ""
         for para in re.split(r"\n\s*\n", text):
@@ -136,6 +179,7 @@ class Recall:
     def index(self):
         db = self.db
         seen, changed = set(), 0
+        self.changed_paths, self.redacted, self.unreadable = [], 0, []
         known = {p: (m, s) for p, m, s in db.execute("SELECT path, mtime, size FROM files")}
         for source, p in self.sources():
             key = str(p)
@@ -146,11 +190,16 @@ class Recall:
                 continue
             if known.get(key) == (st.st_mtime, st.st_size):
                 continue
-            rows = self.chat_rows(p) if source == "chat" else self.file_rows(p)
+            try:
+                rows = list(self.chat_rows(p) if source == "chat" else self.file_rows(p))
+            except OSError:  # iCloud/Dropbox placeholder not downloaded yet (EDEADLK on macOS), permission, vanished file
+                self.unreadable.append(key)
+                continue
             db.execute("DELETE FROM docs WHERE path = ?", (key,))
             db.executemany("INSERT INTO docs(text, source, path, ts, who) VALUES (?, ?, ?, ?, ?)", ((t, source, key, ts, who) for ts, who, t in rows))
             db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (key, st.st_mtime, st.st_size))
             changed += 1
+            self.changed_paths.append((source, key))
         gone = set(known) - seen
         for g in gone:
             db.execute("DELETE FROM docs WHERE path = ?", (g,))
@@ -198,12 +247,18 @@ def main(argv=None):
     ap.add_argument("--index", action="store_true")
     ap.add_argument("--stats", action="store_true")
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--skip-glob", action="append", default=cfg.get("skip_globs", []), help="skip files/folders matching this glob (repeatable; also read from <dir>/.recallignore)")
+    ap.add_argument("--no-redact", action="store_true", help="index credentials verbatim (default: keys, tokens, PEM blocks, passwords are masked)")
+    ap.add_argument("--changed", action="store_true", help="print the files (re)indexed by this run")
     ap.add_argument("--lang", choices=sorted(NAMES), default=cfg.get("lang", "en"))
     a = ap.parse_args(argv)
-    r = Recall(None, a.db, a.dir, a.claude_dir, a.all_projects, a.depth, a.lang)
+    r = Recall(None, a.db, a.dir, a.claude_dir, a.all_projects, a.depth, a.lang, not a.no_redact, a.skip_glob)
     changed, gone = r.index()
     if not (a.quiet or a.query):
-        print(r.n["index"].format(changed=changed, gone=gone))
+        print(r.n["index"].format(changed=changed, gone=gone) + (f" · redacted {r.redacted}" if r.redacted else "") + (f" · unreadable {len(r.unreadable)}" if r.unreadable else ""))
+    if a.changed:
+        for src, path in r.changed_paths:
+            print(f"{src}\t{path}")
     if a.stats:
         rows, kb = r.stats()
         for src, n in rows:

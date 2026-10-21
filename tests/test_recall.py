@@ -60,6 +60,18 @@ class RecallTest(unittest.TestCase):
         self.assertEqual({h[1] for h in r.search("port busy", source="runbook")}, {"runbook"})
         r.db.close()
 
+    def test_secrets_are_redacted_and_ignore_file_respected(self):
+        (self.proj / "notes" / "keys.md").write_text("api_key = abcdefghij1234567890\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\ntoken sk-ant-abcdefghijklmnopqrstuvwxyz123456 ok\n")
+        (self.proj / "notes" / "private.md").write_text("do not index this\n")
+        (self.proj / ".recallignore").write_text("# test\nnotes/private.md\n")
+        changed, _ = self.r.index()
+        self.assertGreater(self.r.redacted, 0)
+        self.assertEqual(self.r.search("abcdefghij1234567890"), [])
+        self.assertEqual(self.r.search("AAAA", source="notes"), [])
+        self.assertTrue(self.r.search("redacted", source="notes"))
+        self.assertEqual(self.r.search("index this"), [])
+        self.assertTrue(any(p.endswith("keys.md") for _, p in self.r.changed_paths))
+
     def test_removed_file_is_dropped(self):
         self.r.index()
         (self.proj / "notes" / "deploy.md").unlink()
