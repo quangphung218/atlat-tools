@@ -61,16 +61,20 @@ class RecallTest(unittest.TestCase):
         r.db.close()
 
     def test_secrets_are_redacted_and_ignore_file_respected(self):
-        (self.proj / "notes" / "keys.md").write_text("api_key = abcdefghij1234567890\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\ntoken sk-ant-abcdefghijklmnopqrstuvwxyz123456 ok\n")
+        (self.proj / "notes" / "keys.md").write_text("api_key = abcdefghij1234567890\nnote about keys\n")
+        (self.proj / "notes" / "accounts.md").write_text("user: a@b.com\npass: Secret1234\nmk: Abc@6868\nchatgpt: x@y.com|Hunter22!\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n")
         (self.proj / "notes" / "private.md").write_text("do not index this\n")
         (self.proj / ".recallignore").write_text("# test\nnotes/private.md\n")
         changed, _ = self.r.index()
         self.assertGreater(self.r.redacted, 0)
         self.assertEqual(self.r.search("abcdefghij1234567890"), [])
-        self.assertEqual(self.r.search("AAAA", source="notes"), [])
-        self.assertTrue(self.r.search("redacted", source="notes"))
+        self.assertTrue(self.r.search("redacted", source="notes"))      # keys.md: one masked span, rest indexed
+        self.assertTrue(any(p.endswith("accounts.md") for p in self.r.secret_files))
+        for secret in ("Secret1234", "Abc@6868", "Hunter22", "AAAA"):
+            self.assertEqual(self.r.search(secret), [], secret)
+        self.assertEqual(self.r.search("a@b.com"), [])                    # credential note is not indexed at all
+        self.assertEqual(self.r.index(), (0, 0))                          # and not re-read next time
         self.assertEqual(self.r.search("index this"), [])
-        self.assertTrue(any(p.endswith("keys.md") for _, p in self.r.changed_paths))
 
     def test_removed_file_is_dropped(self):
         self.r.index()

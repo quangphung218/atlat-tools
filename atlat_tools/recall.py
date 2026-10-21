@@ -15,8 +15,8 @@ What gets indexed (configure with flags or ~/.config/recall/config.json):
     `--dir ~/runs:run` gives that folder its own source label
   - memory: the project's auto-memory folder (~/.claude/projects/<key>/memory)
 The index lives in --db (default ~/.local/share/recall/<key>.db) and only re-reads files whose mtime/size changed.
-Credentials never enter the index: private-key blocks, API keys, tokens, JWTs and "password: …" values are masked before insert
-(--no-redact to keep them). Skip paths with --skip-glob or a .recallignore file (one glob per line) at a --dir root.
+Credentials never enter the index: private-key blocks, API keys, tokens, JWTs and "password/pass/pw/pin: …" values are masked
+before insert, and a file with three or more such spans (a credential note) is skipped entirely (--no-redact disables both). Skip paths with --skip-glob or a .recallignore file (one glob per line) at a --dir root.
 """
 import argparse
 import json
@@ -36,8 +36,11 @@ SECRETS = [
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<redacted key>"),
     (re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}"), "<redacted token>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted jwt>"),
-    (re.compile(r"(?i)((?:api[_ -]?key|secret|token|password|passwd|mật khẩu)\s*[:=]\s*[\"']?)([^\s\"']{8,})"), r"\1<redacted>"),
+    # "password: x", "pass gpt: x", "mk: x", "pin=1234", "user|pass" pairs — the key stays, the value goes
+    (re.compile(r"(?i)(\b(?:pass(?:word|wd)?|pw|mk|mật khẩu|pin|otp|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key)\b[^\n:=]{0,12}[:=]\s*[\"']?)([^\s\"']{4,})"), r"\1<redacted>"),
+    (re.compile(r"([\w.+-]+@[\w.-]+\.\w+)\s*[|/]\s*(\S{4,})"), r"\1|<redacted>"),
 ]
+SECRET_NOTE_THRESHOLD = 3  # a file with this many masked spans is a credential note: it is not indexed at all
 IGNORE_FILE = ".recallignore"
 REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 TAGS = re.compile(r"</?(command-[a-z-]+|local-command-[a-z]+)>")
@@ -96,6 +99,7 @@ class Recall:
         self.changed_paths = []   # (source, path) re-read in the last index()
         self.redacted = 0         # masked spans in the last index()
         self.unreadable = []      # files the OS refused to read (e.g. iCloud placeholders not downloaded yet)
+        self.secret_files = []    # files skipped because they are mostly credentials
         self.n = NAMES.get(lang, NAMES["en"])
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.db_path)
@@ -179,7 +183,7 @@ class Recall:
     def index(self):
         db = self.db
         seen, changed = set(), 0
-        self.changed_paths, self.redacted, self.unreadable = [], 0, []
+        self.changed_paths, self.redacted, self.unreadable, self.secret_files = [], 0, [], []
         known = {p: (m, s) for p, m, s in db.execute("SELECT path, mtime, size FROM files")}
         for source, p in self.sources():
             key = str(p)
@@ -190,12 +194,18 @@ class Recall:
                 continue
             if known.get(key) == (st.st_mtime, st.st_size):
                 continue
+            before = self.redacted
             try:
                 rows = list(self.chat_rows(p) if source == "chat" else self.file_rows(p))
             except OSError:  # iCloud/Dropbox placeholder not downloaded yet (EDEADLK on macOS), permission, vanished file
                 self.unreadable.append(key)
                 continue
             db.execute("DELETE FROM docs WHERE path = ?", (key,))
+            if source != "chat" and self.redact_secrets and self.redacted - before >= SECRET_NOTE_THRESHOLD:
+                # a credential note: remember we saw it (so it is not re-read every run) but index nothing from it
+                self.secret_files.append(key)
+                db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (key, st.st_mtime, st.st_size))
+                continue
             db.executemany("INSERT INTO docs(text, source, path, ts, who) VALUES (?, ?, ?, ?, ?)", ((t, source, key, ts, who) for ts, who, t in rows))
             db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (key, st.st_mtime, st.st_size))
             changed += 1
@@ -255,7 +265,7 @@ def main(argv=None):
     r = Recall(None, a.db, a.dir, a.claude_dir, a.all_projects, a.depth, a.lang, not a.no_redact, a.skip_glob)
     changed, gone = r.index()
     if not (a.quiet or a.query):
-        print(r.n["index"].format(changed=changed, gone=gone) + (f" · redacted {r.redacted}" if r.redacted else "") + (f" · unreadable {len(r.unreadable)}" if r.unreadable else ""))
+        print(r.n["index"].format(changed=changed, gone=gone) + (f" · redacted {r.redacted}" if r.redacted else "") + (f" · credential notes skipped {len(r.secret_files)}" if r.secret_files else "") + (f" · unreadable {len(r.unreadable)}" if r.unreadable else ""))
     if a.changed:
         for src, path in r.changed_paths:
             print(f"{src}\t{path}")
