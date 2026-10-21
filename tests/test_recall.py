@@ -62,6 +62,7 @@ class RecallTest(unittest.TestCase):
 
     def test_secrets_are_redacted_and_ignore_file_respected(self):
         (self.proj / "notes" / "keys.md").write_text("api_key = abcdefghij1234567890\nnote about keys\n")
+        (self.proj / "notes" / "course.md").write_text("Key google studio\nAQ.Ab8RN6Kf2wzAm7liMzlHbv469TCXNrmuumW3NZO9NC\nkey AIzaSyA1234567890abcdefghijklmnopqrstuvw\nthe token is zq9X8v7W6u5T4s3R2q1P0o9N8m7L\n")
         (self.proj / "notes" / "accounts.md").write_text("user: a@b.com\npass: Secret1234\nmk: Abc@6868\nchatgpt: x@y.com|Hunter22!\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n")
         (self.proj / "notes" / "private.md").write_text("do not index this\n")
         (self.proj / ".recallignore").write_text("# test\nnotes/private.md\n")
@@ -70,7 +71,7 @@ class RecallTest(unittest.TestCase):
         self.assertEqual(self.r.search("abcdefghij1234567890"), [])
         self.assertTrue(self.r.search("redacted", source="notes"))      # keys.md: one masked span, rest indexed
         self.assertTrue(any(p.endswith("accounts.md") for p in self.r.secret_files))
-        for secret in ("Secret1234", "Abc@6868", "Hunter22", "AAAA"):
+        for secret in ("Secret1234", "Abc@6868", "Hunter22", "AAAA", "Ab8RN6Kf2wzAm7liMzlHbv469TCXNrmuumW3NZO9NC", "AIzaSyA1234567890abcdefghijklmnopqrstuvw", "zq9X8v7W6u5T4s3R2q1P0o9N8m7L"):
             self.assertEqual(self.r.search(secret), [], secret)
         self.assertEqual(self.r.search("a@b.com"), [])                    # credential note is not indexed at all
         self.assertEqual(self.r.index(), (0, 0))                          # and not re-read next time

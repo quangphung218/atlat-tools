@@ -35,6 +35,12 @@ SECRETS = [
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), "<redacted token>"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "<redacted key>"),
     (re.compile(r"\bxox[abpr]-[A-Za-z0-9-]{10,}"), "<redacted token>"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "<redacted key>"),                 # Google API key
+    (re.compile(r"\bAQ\.[A-Za-z0-9_-]{30,}"), "<redacted key>"),                   # Google AI Studio key
+    (re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}"), "<redacted key>"),        # Stripe
+    (re.compile(r"\bhf_[A-Za-z0-9]{30,}"), "<redacted token>"),                     # Hugging Face
+    # a line that mentions a key/token/secret and then carries a long opaque string: mask the string
+    (re.compile(r"(?i)(\b(?:api[_ -]?key|key|token|secret|credential|bearer)\b[^\n]{0,40}?)\b([A-Za-z0-9._-]{24,})"), r"\1<redacted>"),
     (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted jwt>"),
     # "password: x", "pass gpt: x", "mk: x", "pin=1234", "user|pass" pairs — the key stays, the value goes
     (re.compile(r"(?i)(\b(?:pass(?:word|wd)?|pw|mk|mật khẩu|pin|otp|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key)\b[^\n:=]{0,12}[:=]\s*[\"']?)([^\s\"']{4,})"), r"\1<redacted>"),
