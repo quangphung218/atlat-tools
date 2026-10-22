@@ -44,6 +44,8 @@ SECRETS = [
     (re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)?"), "<redacted jwt>"),
     # "password: x", "pass gpt: x", "mk: x", "pin=1234", "user|pass" pairs — the key stays, the value goes
     (re.compile(r"(?i)(\b(?:pass(?:word|wd)?|pw|mk|mật khẩu|pin|otp|secret|token|api[_ -]?key|access[_ -]?key|private[_ -]?key)\b[^\n:=]{0,12}[:=]\s*[\"']?)([^\s\"']{4,})"), r"\1<redacted>"),
+    # "mật khẩu Abc12345" with no ":"/"=": mask only a value that mixes letters and digits, so "password manager" stays
+    (re.compile(r"(?i)(\b(?:pass(?:word|wd)?|mk|mật khẩu)\s+[\"']?)(?=[^\s\"']*\d)(?=[^\s\"']*[A-Za-z])([^\s\"']{8,})"), r"\1<redacted>"),
     (re.compile(r"([\w.+-]+@[\w.-]+\.\w+)\s*[|/]\s*(\S{4,})"), r"\1|<redacted>"),
 ]
 SECRET_NOTE_THRESHOLD = 3  # a file with this many masked spans is a credential note: it is not indexed at all

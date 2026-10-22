@@ -77,6 +77,14 @@ class RecallTest(unittest.TestCase):
         self.assertEqual(self.r.index(), (0, 0))                          # and not re-read next time
         self.assertEqual(self.r.search("index this"), [])
 
+    def test_bare_password_without_colon_is_redacted(self):
+        for line, secret in (("- mật khẩu Xy7kQ2mN9pLrT4", "Xy7kQ2mN9pLrT4"), ("password  aB3$dEf9GhJ", "aB3$dEf9GhJ"), ("pass Zq81wErT", "Zq81wErT")):
+            out, n = recall.redact(line)
+            self.assertNotIn(secret, out, line)
+            self.assertEqual(n, 1, line)
+        for line in ("dùng password manager như Bitwarden", "mật khẩu mạnh nên dài", "pass test 12/12"):
+            self.assertEqual(recall.redact(line), (line, 0), line)
+
     def test_removed_file_is_dropped(self):
         self.r.index()
         (self.proj / "notes" / "deploy.md").unlink()
