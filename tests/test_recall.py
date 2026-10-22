@@ -78,7 +78,7 @@ class RecallTest(unittest.TestCase):
         self.assertEqual(self.r.search("index this"), [])
 
     def test_bare_password_without_colon_is_redacted(self):
-        for line, secret in (("- mật khẩu Xy7kQ2mN9pLrT4", "Xy7kQ2mN9pLrT4"), ("password  aB3$dEf9GhJ", "aB3$dEf9GhJ"), ("pass Zq81wErT", "Zq81wErT")):
+        for line, secret in (("- mật khẩu Xy7kQ2mN9pLrT4", "Xy7kQ2mN9pLrT4"), ("password  aB3$dEf9GhJ", "aB3$dEf9GhJ"), ("pass Zq81wErT", "Zq81wErT"), ("- mật khẩu là Qw3rTy9UiOp1.", "Qw3rTy9UiOp1"), ("password is Mn8bV7cX6zL", "Mn8bV7cX6zL")):
             out, n = recall.redact(line)
             self.assertNotIn(secret, out, line)
             self.assertEqual(n, 1, line)
