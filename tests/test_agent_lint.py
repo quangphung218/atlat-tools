@@ -32,6 +32,18 @@ class AgentLintTest(unittest.TestCase):
     def messages(self, lint):
         return [m for _, _, _, m in lint.items]
 
+    def test_gitignored_paths_are_not_missing(self):
+        # 26/10: career-ops, 10day-project báo "không thấy" cho data/*, secrets/* mà repo cố ý không commit.
+        import subprocess
+        write(self.root / "CLAUDE.md", "# P\n\nRead `data/pipeline.md`, `secrets/x.env` and `docs/gone.md`.\n")
+        write(self.root / ".gitignore", "data/\nsecrets/\n")
+        (self.root / "data").mkdir(); (self.root / "secrets").mkdir(); (self.root / "docs").mkdir()
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        msgs = " ".join(self.messages(self.lint()))
+        self.assertIn("docs/gone.md", msgs)
+        self.assertNotIn("data/pipeline.md", msgs)
+        self.assertNotIn("secrets/x.env", msgs)
+
     def test_clean_project_has_no_findings(self):
         write(self.root / "CLAUDE.md", "# Project\n\nRead `docs/guide.md` first.\n")
         write(self.root / "docs" / "guide.md", "guide")

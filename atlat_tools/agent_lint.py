@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -131,6 +132,7 @@ class Linter:
                 else:
                     self.add("error", scope, rel(f, root), self.t("import_missing", imp=imp))
         missing = sorted({tok for tok in PATH_TOKEN.findall(text) if looks_broken(tok, f.parent, root)})
+        missing = [x for x in missing if x not in gitignored(root, missing)]
         if missing:
             shown = ", ".join(f"`{x}`" for x in missing[:8]) + (" …" if len(missing) > 8 else "")
             self.add("info" if in_template else "warn", scope, rel(f, root), self.t("paths_missing", n=len(missing), shown=shown))
@@ -275,6 +277,20 @@ def resolve(token, *bases):
     if token.startswith("~/"):
         return Path(token).expanduser().exists()
     return any((b / token).exists() for b in bases)
+
+
+def gitignored(root, tokens):
+    """Paths the repo ignores on purpose (data/, secrets/, build output) are not broken references."""
+    toks = [t.rstrip("/") for t in tokens if not t.startswith("~/")]
+    if not toks:
+        return set()
+    try:
+        r = subprocess.run(["git", "-C", str(root), "check-ignore", "--no-index", "--stdin"], input="\n".join(toks),
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    hit = set(r.stdout.split())
+    return {t for t in tokens if t.rstrip("/") in hit}
 
 
 def looks_broken(token, *bases):
