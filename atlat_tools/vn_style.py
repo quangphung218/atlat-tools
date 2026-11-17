@@ -10,7 +10,7 @@ own rules with --rules.
     vn-style docs/ --strict              exit 1 on warnings too (default: only errors, i.e. forbidden pronouns)
     vn-style x.md --json | --lang en
     vn-style --rules my-voice.json       JSON with any of: pronouns, openers, closers, fillers, hedges, vague_time, title_case,
-                                         new_marks, first_line_announce (lists of strings or booleans)
+                                         new_marks, first_line_announce, metaphors (lists of strings or booleans)
 
 Fixes never touch wording, only mechanics. Everything else is a report, because "có lẽ" can be a real hedge and "việc" can be a
 noun — a human (or the agent that wrote the text) decides.
@@ -32,6 +32,10 @@ DEFAULT_RULES = {
     "title_case": True,
     "new_marks": True,
     "first_line_announce": ["Em sẽ", "Em đang", "Em xin", "Để em"],
+    # metaphors for technical state: say what it is ("still running, nothing stops it"), not what it resembles (owner 17/11)
+    "metaphors": ["mồ côi", "vô gia cư", "tiến trình ma", "process ma", "file ma", "bóng ma", "zombie", "trôi nổi", "lơ lửng",
+                  "tiến trình chết", "process chết", "link chết", "đường dẫn chết", "code chết", "nhánh chết", "ăn suất", "nuốt lỗi",
+                  "orphan", "orphaned", "ghost", "dangling", "floating"],
 }
 # tone marks (NFD): grave, acute, tilde, hook above, dot below
 TONES = "̣̀́̃̉"
@@ -41,11 +45,11 @@ TOKEN = re.compile(r"[^\W\d_][\w\u0300-\u036f]*")
 SPACE_PUNCT = re.compile(r" +([.,;:!?])(?=\s|$)")
 TEXT = {"en": {"pronoun": "forbidden pronoun “{w}”", "opener": "filler opener “{w}”", "closer": "filler closer “{w}”", "filler": "padding word “{w}”",
                "hedge": "hedge “{w}” (keep only if the uncertainty is real)", "vague": "vague time estimate “{w}” (say a number)", "space": "space before punctuation",
-               "old": "old-style tone mark “{w}” → “{new}”", "title": "Title Case: “{w}”", "nfc": "text is not NFC-normalised", "first": "first line announces (“{w}…”) instead of concluding",
+               "old": "old-style tone mark “{w}” → “{new}”", "title": "Title Case: “{w}”", "nfc": "text is not NFC-normalised", "first": "first line announces (“{w}…”) instead of concluding", "metaphor": "metaphor “{w}” (describe the actual state)",
                "sum": "{files} file(s): {e} errors, {w} warnings", "fixed": "fixed {n} file(s)", "clean": "clean"},
         "vi": {"pronoun": "đại từ không dùng “{w}”", "opener": "câu đệm mở đầu “{w}”", "closer": "câu đệm kết “{w}”", "filler": "từ thừa “{w}”",
                "hedge": "rào đón “{w}” (chỉ giữ khi thật sự chưa chắc)", "vague": "ước lượng mơ hồ “{w}” (ghi con số)", "space": "dấu cách trước dấu câu",
-               "old": "dấu kiểu cũ “{w}” → “{new}”", "title": "Viết Hoa Kiểu Tiêu Đề: “{w}”", "nfc": "văn bản chưa chuẩn NFC", "first": "dòng đầu báo việc sẽ làm (“{w}…”) thay vì kết luận",
+               "old": "dấu kiểu cũ “{w}” → “{new}”", "title": "Viết Hoa Kiểu Tiêu Đề: “{w}”", "nfc": "văn bản chưa chuẩn NFC", "first": "dòng đầu báo việc sẽ làm (“{w}…”) thay vì kết luận", "metaphor": "ẩn dụ “{w}” (tả trạng thái thật)",
                "sum": "{files} file: {e} lỗi, {w} cảnh báo", "fixed": "đã sửa {n} file", "clean": "sạch"}}
 
 
@@ -109,6 +113,9 @@ class Linter:
                 for w in self.r.get(key) or []:
                     if word_re(w).search(plain):
                         out.append((i, "warn", code, self.t[code].format(w=w)))
+            for w in self.r.get("metaphors") or []:
+                if re.search(rf"(?<!\w){re.escape(w)}(?!\w)", plain, re.I):
+                    out.append((i, "warn", "metaphor", self.t["metaphor"].format(w=w)))
             if SPACE_PUNCT.search(plain):
                 out.append((i, "warn", "space", self.t["space"]))
             if self.r.get("new_marks"):

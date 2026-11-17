@@ -45,6 +45,13 @@ class VnStyleTest(unittest.TestCase):
         self.assertFalse(any(line == 8 for line, _ in c))  # code block skipped
         self.assertFalse(any(code == "title" and "Hà Nội" in msg for _, _, code, msg in self.l.lint(SAMPLE)))
 
+    def test_metaphors(self):
+        c = self.codes("Chrome mồ côi sau export.\nCòn tiến trình chết và link chết.\nThe orphaned Chrome.\n`orphan` trong code thì bỏ qua.")
+        self.assertEqual([x for x in c if x[1] == "metaphor"], [(1, "metaphor"), (2, "metaphor"), (2, "metaphor"), (3, "metaphor")])
+        # plain words that merely contain a listed word are not flagged
+        ok = self.codes("Ma trận mang dữ liệu; máy chết máy là lỗi khác; floatingpoint.")
+        self.assertNotIn("metaphor", [x[1] for x in ok])
+
     def test_inline_code_ignored_by_lint(self):
         self.assertEqual(self.codes("Mở file `hòa.md` nhé."), [])
 
